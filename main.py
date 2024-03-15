@@ -1,5 +1,6 @@
 from fastapi import FastAPI, Path, Query, HTTPException, File, UploadFile
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import Optional
@@ -8,6 +9,8 @@ import shutil
 from keras.models import load_model
 import classifier
 import time as t
+import onnxruntime
+
 
 app = FastAPI()
 
@@ -24,20 +27,21 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-model = load_model('models/inception_v3_categorical_epoch_20.keras')
+onnx_model_path = 'models/inception_v3_categorical_epoch_20.onnx'
+session = onnxruntime.InferenceSession(onnx_model_path, providers=['CPUExecutionProvider'])
 
 
 class GenderClassifier:
     name: str
-    result: str
-    score: str
-    time: float
+    label: str
+    confidence: float
+    latency: float
 
-    def __init__(self, name: str, result: str, score: str, time: float) -> None:
+    def __init__(self, name: str, label: str, confidence: str, latency: float) -> None:
         self.name: str = name
-        self.result: str = result
-        self.score: str = score
-        self.time: float = time
+        self.label: str = label
+        self.confidence: str = confidence
+        self.latency: float = latency
 
 
 class PredictionRequest(BaseModel):
@@ -69,31 +73,19 @@ async def create_upload_file(uploaded_file: UploadFile):
     }
 
 
-@app.post("/predict/", status_code=status.HTTP_200_OK)
+@app.post("/predict", status_code=status.HTTP_200_OK)
 async def predict(prediction_request: PredictionRequest):
-    gender, score, inference_time = classifier.predict(prediction_request.filename, model)
-    return GenderClassifier(
-        name=prediction_request.filename,
-        result=gender,
-        score=score,
-        time=inference_time
-    )
-
-
-@app.post("/predict/crop", status_code=status.HTTP_200_OK)
-async def predict(prediction_request: PredictionRequest):
-    filenames = classifier.crop_faces(prediction_request.filename)
+    filenames = classifier.crop_faces_mtcnn(prediction_request.filename)
 
     results = []
     for filename in filenames:
-        gender, score, inference_time = classifier.predict(filename, model)
+        label, confidence, latency = classifier.predict(filename, session)
         results.append(
             GenderClassifier(
                 name=filename,
-                result=gender,
-                score=score,
-                time=inference_time
+                label=label,
+                confidence=confidence,
+                latency=latency
             )
         )
-
     return results
